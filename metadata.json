@@ -1,0 +1,10 @@
+{
+  "name": "Attendly",
+  "description": "Attendly — a clear view of every classroom. Secure QR attendance and academic operations with real-time verification and eligibility reports.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -15,7 +15,9 @@ export type SyncAction =
   | 'SESSION_END'
   | 'STUDENT_CHECKIN'
   | 'ATTENDANCE_OVERRIDE'
-  | 'REQUEST_ACTIVE_SESSION';
+  | 'REQUEST_ACTIVE_SESSION'
+  | 'STUDENT_EXCUSE_REQUEST'
+  | 'EXCUSE_DECISION';
 
 export interface SyncMessage {
   type: 'ATTENDLY_SYNC';

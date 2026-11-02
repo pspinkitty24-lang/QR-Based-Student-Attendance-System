@@ -14,11 +14,14 @@ import {
   Sparkles,
   Calendar,
   Check,
+  Send,
+  HelpCircle,
 } from 'lucide-react';
-import { User, AttendanceRecord, AttendanceSession } from '../types';
+import { User, AttendanceRecord, AttendanceSession, ExcuseType, StudentExcuseRequest } from '../types';
 import { store } from '../services/store';
 import { realtimeSync } from '../services/realtimeSync';
 import { StatusBadge } from '../components/StatusBadge';
+import { Modal } from '../components/Modal';
 
 interface ScanQRProps {
   user: User;
@@ -39,6 +42,11 @@ export const ScanQR: React.FC<ScanQRProps> = ({ user, notify }) => {
   const [manualCode, setManualCode] = useState('');
   const [showManualInput, setShowManualInput] = useState(false);
   const [processing, setProcessing] = useState(false);
+
+  // Excuse / OD / Permission modal state
+  const [excuseModalType, setExcuseModalType] = useState<ExcuseType | null>(null);
+  const [excuseReason, setExcuseReason] = useState('');
+  const [submittingExcuse, setSubmittingExcuse] = useState(false);
 
   const [activeSession, setActiveSession] = useState<AttendanceSession | null>(() => {
     return store.getSessions().find((s) => s.status === 'active') || null;
@@ -212,10 +220,41 @@ export const ScanQR: React.FC<ScanQRProps> = ({ user, notify }) => {
     handleCodeScanned(manualCode.trim());
   };
 
+  const handleSubmitExcuse = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!excuseModalType) return;
+    if (!excuseReason.trim()) {
+      if (notify) notify('Please provide a specific reason for your request.');
+      return;
+    }
+    setSubmittingExcuse(true);
+    try {
+      store.submitStudentExcuseRequest(
+        user._id,
+        excuseModalType,
+        excuseReason.trim(),
+        activeSession?._id
+      );
+      if (notify) {
+        notify(`Request for ${excuseModalType.replace('_', ' ').toUpperCase()} submitted to faculty!`);
+      }
+      setExcuseModalType(null);
+      setExcuseReason('');
+    } catch (err: any) {
+      if (notify) notify(err.message || 'Failed to submit excuse request.');
+    } finally {
+      setSubmittingExcuse(false);
+    }
+  };
+
   // Student's personal attendance report
   const studentEligibility = store
     .getAttendanceEligibilityReport()
     .find((r) => r.studentDbId === user._id);
+
+  // Student's record in the active session
+  const myCurrentRecord = activeSession?.records.find((r) => r.studentId === user._id);
+  const myPendingRequest = activeSession?.excuseRequests?.find((r) => r.studentId === user._id);
 
   // Recent attendance sessions for this student
   const studentSessions = store.getSessions().filter((s) => {
@@ -588,6 +627,211 @@ export const ScanQR: React.FC<ScanQRProps> = ({ user, notify }) => {
               </form>
             </div>
           )}
+
+          {/* QUICK ACTIONS / EXCUSE SECTION (Matching Faculty module) */}
+          <div
+            style={{
+              padding: '18px 24px 20px',
+              borderTop: '1px solid #eef2ec',
+              backgroundColor: '#fbfcfb',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                marginBottom: 10,
+                flexWrap: 'wrap',
+                gap: 6,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  letterSpacing: '0.6px',
+                  color: '#466657',
+                  textTransform: 'uppercase',
+                }}
+              >
+                QUICK ACTIONS / EXCUSE
+              </span>
+
+              {myCurrentRecord && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 11, color: '#687e74' }}>Current Session:</span>
+                  <StatusBadge status={myCurrentRecord.status} />
+                </div>
+              )}
+            </div>
+
+            {/* Quick Action Buttons matching Faculty module styling */}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="button"
+                style={{
+                  padding: '7px 15px',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  borderRadius: 8,
+                  border: '1.5px solid #86efac',
+                  backgroundColor: myCurrentRecord?.status === 'present' ? '#dcfce7' : '#ffffff',
+                  color: '#166534',
+                }}
+                onClick={() => {
+                  if (myCurrentRecord?.status === 'present') {
+                    if (notify) notify('You are already recorded as Present.');
+                  } else {
+                    startCamera();
+                  }
+                }}
+                title="Mark Present via QR scan"
+              >
+                Present
+              </button>
+
+              <button
+                type="button"
+                className="button"
+                style={{
+                  padding: '7px 15px',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  borderRadius: 8,
+                  border: '1.5px solid #fca5a5',
+                  backgroundColor: myCurrentRecord?.status === 'absent' ? '#fee2e2' : '#ffffff',
+                  color: '#991b1b',
+                }}
+                onClick={() => {
+                  setExcuseModalType('absent');
+                  setExcuseReason('Sick leave / Personal emergency');
+                }}
+                title="Report Absent"
+              >
+                Absent
+              </button>
+
+              <button
+                type="button"
+                className="button"
+                style={{
+                  padding: '7px 15px',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  borderRadius: 8,
+                  border: '1.5px solid #7dd3fc',
+                  backgroundColor: myCurrentRecord?.status === 'on_duty' ? '#e0f2fe' : '#ffffff',
+                  color: '#0369a1',
+                }}
+                onClick={() => {
+                  setExcuseModalType('on_duty');
+                  setExcuseReason('Inter-College Technical Symposium');
+                }}
+                title="Request On-Duty (OD)"
+              >
+                OD
+              </button>
+
+              <button
+                type="button"
+                className="button"
+                style={{
+                  padding: '7px 15px',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  borderRadius: 8,
+                  border: '1.5px solid #d8b4fe',
+                  backgroundColor: myCurrentRecord?.status === 'permission' ? '#f3e8ff' : '#ffffff',
+                  color: '#7e22ce',
+                }}
+                onClick={() => {
+                  setExcuseModalType('permission');
+                  setExcuseReason('Late arrival due to bus breakdown');
+                }}
+                title="Request Permission"
+              >
+                Permission
+              </button>
+
+              <button
+                type="button"
+                className="button"
+                style={{
+                  padding: '7px 15px',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  borderRadius: 8,
+                  border: '1.5px solid #fde68a',
+                  backgroundColor: myCurrentRecord?.status === 'excused' ? '#fef3c7' : '#ffffff',
+                  color: '#b45309',
+                }}
+                onClick={() => {
+                  setExcuseModalType('excused');
+                  setExcuseReason('Medical illness / Doctor consultation');
+                }}
+                title="Submit custom Excuse..."
+              >
+                Excuse…
+              </button>
+            </div>
+
+            {/* Active request banner / feedback */}
+            {myCurrentRecord?.reason && (
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: '10px 14px',
+                  borderRadius: 8,
+                  backgroundColor:
+                    myCurrentRecord.requestStatus === 'approved'
+                      ? '#eaf4eb'
+                      : myCurrentRecord.requestStatus === 'rejected'
+                      ? '#fee2e2'
+                      : '#fffbeb',
+                  border:
+                    '1px solid ' +
+                    (myCurrentRecord.requestStatus === 'approved'
+                      ? '#b7dfbe'
+                      : myCurrentRecord.requestStatus === 'rejected'
+                      ? '#fca5a5'
+                      : '#fde68a'),
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <div>
+                  <strong
+                    style={{
+                      display: 'block',
+                      fontSize: 12,
+                      color:
+                        myCurrentRecord.requestStatus === 'approved'
+                          ? '#166534'
+                          : myCurrentRecord.requestStatus === 'rejected'
+                          ? '#991b1b'
+                          : '#92400e',
+                    }}
+                  >
+                    {myCurrentRecord.requestStatus === 'approved'
+                      ? '✓ Request Approved by Faculty'
+                      : myCurrentRecord.requestStatus === 'rejected'
+                      ? '✕ Request Rejected by Faculty'
+                      : '⏳ Excuse Request Sent - Awaiting Faculty Approval'}
+                  </strong>
+                  <span style={{ fontSize: 11, color: '#4a6356' }}>
+                    Reason: &quot;{myCurrentRecord.reason}&quot;
+                  </span>
+                </div>
+
+                <StatusBadge status={myCurrentRecord.status} />
+              </div>
+            )}
+          </div>
         </section>
 
         {/* Right: Personal Status Card & Guide */}
@@ -666,6 +910,117 @@ export const ScanQR: React.FC<ScanQRProps> = ({ user, notify }) => {
           </section>
         </div>
       </div>
+
+      {/* Student Excuse / OD / Permission Modal */}
+      <Modal
+        isOpen={!!excuseModalType}
+        onClose={() => setExcuseModalType(null)}
+        title={
+          excuseModalType === 'on_duty'
+            ? 'Request On-Duty (OD) Permission'
+            : excuseModalType === 'permission'
+            ? 'Request Permission'
+            : excuseModalType === 'absent'
+            ? 'Report Absence'
+            : 'Submit Attendance Excuse'
+        }
+        subtitle={`${user.name} (${user.code}) · Sent directly to faculty`}
+      >
+        <form onSubmit={handleSubmitExcuse}>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#164d40', marginBottom: 8 }}>
+              Quick Common Reasons (Click to select):
+            </label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+              {(excuseModalType === 'on_duty'
+                ? [
+                    'Inter-College Technical Symposium',
+                    'University Sports Meet',
+                    'Campus Placement Interview',
+                    'Paper Presentation / Conference',
+                    'Hackathon Competition',
+                  ]
+                : excuseModalType === 'permission'
+                ? [
+                    'Late arrival - College bus breakdown',
+                    'Administrative Office / Fee payment',
+                    'Department Library project research',
+                    'Emergency personal leave',
+                  ]
+                : excuseModalType === 'absent'
+                ? [
+                    'Fever / Sick leave today',
+                    'Out of station / Travel',
+                    'Personal family emergency',
+                  ]
+                : [
+                    'Medical Illness / Fever',
+                    'Hospital Doctor Appointment',
+                    'Family Emergency',
+                    'Special Approved Leave',
+                  ]
+              ).map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => setExcuseReason(preset)}
+                  style={{
+                    padding: '4px 10px',
+                    borderRadius: 14,
+                    fontSize: 11,
+                    backgroundColor: excuseReason === preset ? '#dcfce7' : '#f0f4ef',
+                    color: excuseReason === preset ? '#166534' : '#334e42',
+                    border: excuseReason === preset ? '1px solid #86efac' : '1px solid #d8e2d6',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {preset}
+                </button>
+              ))}
+            </div>
+
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#164d40', marginBottom: 6 }}>
+              Specify Detailed Reason:
+            </label>
+            <textarea
+              value={excuseReason}
+              onChange={(e) => setExcuseReason(e.target.value)}
+              placeholder="Explain the reason for your excuse, OD, or permission..."
+              rows={3}
+              required
+              style={{
+                width: '100%',
+                padding: '10px 12px',
+                borderRadius: 8,
+                border: '1px solid #ced8c9',
+                fontSize: 13,
+                fontFamily: 'inherit',
+                resize: 'vertical',
+              }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <button
+              type="button"
+              className="button"
+              onClick={() => setExcuseModalType(null)}
+              disabled={submittingExcuse}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="button primary"
+              disabled={submittingExcuse}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            >
+              <Send size={14} />
+              <span>{submittingExcuse ? 'Submitting…' : 'Send to Faculty'}</span>
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 };

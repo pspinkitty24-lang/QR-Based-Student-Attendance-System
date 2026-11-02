@@ -13,6 +13,8 @@ import {
   NotificationItem,
   StudentEligibilityReportItem,
   AttendanceStatus,
+  StudentExcuseRequest,
+  ExcuseType,
 } from '../types';
 import { realtimeSync, SyncMessage } from './realtimeSync';
 
@@ -973,6 +975,92 @@ class StoreService {
           facultyName: fac?.name,
         });
       }
+    } else if (msg.action === 'STUDENT_EXCUSE_REQUEST') {
+      const request: StudentExcuseRequest = msg.payload;
+      if (request && request.sessionId) {
+        let session = this.db.sessions.find((s) => s._id === request.sessionId);
+        if (!session) {
+          session = {
+            _id: request.sessionId,
+            assignmentId: 'assign-' + (request.classId || 'mca'),
+            facultyId: 'usr-fac-1',
+            startsAt: new Date().toISOString(),
+            endsAt: new Date(Date.now() + 10 * 60000).toISOString(),
+            durationMinutes: 10,
+            status: 'active',
+            qrToken: 'SYNC-' + request.sessionId,
+            tokenExpiresAt: Date.now() + 10 * 60000,
+            rotationCount: 0,
+            records: [],
+            excuseRequests: [],
+            classId: request.classId,
+          };
+          this.db.sessions.unshift(session);
+        }
+        if (!session.excuseRequests) session.excuseRequests = [];
+        const existingIdx = session.excuseRequests.findIndex((r) => r.studentId === request.studentId);
+        if (existingIdx >= 0) {
+          session.excuseRequests[existingIdx] = request;
+        } else {
+          session.excuseRequests.push(request);
+        }
+
+        // Also add or update record on session with status requestStatus: 'pending'
+        let rec = session.records.find((r) => r.studentId === request.studentId);
+        if (!rec) {
+          rec = {
+            _id: 'rec-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+            sessionId: session._id,
+            studentId: request.studentId,
+            status: request.type as AttendanceStatus,
+            markedAt: request.requestedAt,
+            method: 'Student Request',
+            reason: request.reason,
+            requestStatus: 'pending',
+            requestedType: request.type,
+          };
+          session.records.push(rec);
+        } else {
+          rec.reason = request.reason;
+          rec.requestStatus = 'pending';
+          rec.requestedType = request.type;
+        }
+
+        this.addNotification(
+          `Excuse Request: ${request.studentName} (${request.type.toUpperCase()})`,
+          `${request.studentName} (${request.studentCode}) requested ${request.type.replace('_', ' ').toUpperCase()}: "${request.reason}"`,
+          'high'
+        );
+
+        this.saveDatabase(this.db);
+        this.emitChange();
+      }
+    } else if (msg.action === 'EXCUSE_DECISION') {
+      const { sessionId, studentId, status, type, reason, reviewerName } = msg.payload;
+      const session = this.db.sessions.find((s) => s._id === sessionId);
+      if (session) {
+        if (session.excuseRequests) {
+          const req = session.excuseRequests.find((r) => r.studentId === studentId);
+          if (req) {
+            req.status = status;
+            req.reviewedBy = reviewerName;
+            req.reviewedAt = new Date().toISOString();
+          }
+        }
+        const rec = session.records.find((r) => r.studentId === studentId);
+        if (rec) {
+          rec.requestStatus = status;
+          if (status === 'approved') {
+            rec.status = (type as AttendanceStatus) || 'excused';
+            rec.reason = reason ? `${reason} (Approved by ${reviewerName})` : `Approved by ${reviewerName}`;
+          } else {
+            rec.status = 'absent';
+            rec.reason = `Request rejected by ${reviewerName}: "${reason || 'Rejected'}"`;
+          }
+        }
+        this.saveDatabase(this.db);
+        this.emitChange();
+      }
     }
   }
 
@@ -1087,18 +1175,29 @@ class StoreService {
     return [...this.db.notifications];
   }
 
-  // --- AUTHENTICATION ---
-  // Common login: accepts email, username, or code / register number (e.g. admin, faculty, REG2024-001)
+  // Common login: accepts email, username, full name, code / register number (e.g. admin, faculty, REG2024-001)
   public authenticateUser(identifier: string): User | null {
     const clean = identifier.trim().toLowerCase();
     if (!clean) return null;
 
     const user = this.db.users.find((u) => {
       if (!u.isActive) return false;
+      // 1. Exact email match
       if (u.email.toLowerCase() === clean) return true;
+      // 2. Exact code / register number match (e.g. FAC101, MCA2024-001)
       if (u.code.toLowerCase() === clean) return true;
+      // 3. Username part from email (e.g. sharma from sharma@college.edu)
       const username = u.email.split('@')[0].toLowerCase();
       if (username === clean) return true;
+      // 4. Full Name match (e.g. "Dr. Priya Sharma" or updated name)
+      if (u.name.toLowerCase() === clean) return true;
+      // 5. Name without academic prefixes (e.g. "Priya Sharma" when name is "Dr. Priya Sharma")
+      const nameWithoutTitle = u.name.toLowerCase().replace(/^(dr\.|prof\.|mr\.|mrs\.|ms\.)\s*/, '').trim();
+      if (nameWithoutTitle === clean) return true;
+      // 6. First name match (e.g. "priya", "alan")
+      const firstName = nameWithoutTitle.split(' ')[0];
+      if (firstName && firstName.length > 2 && firstName === clean) return true;
+
       // Role shortcuts:
       if (clean === 'admin' && u.role === 'admin') return true;
       if (clean === 'faculty' && u.code === 'FAC101') return true;
@@ -1643,6 +1742,196 @@ class StoreService {
     return record;
   }
 
+  // --- STUDENT EXCUSE / PERMISSION / ON-DUTY (OD) WORKFLOW ---
+  public submitStudentExcuseRequest(
+    studentId: string,
+    type: ExcuseType,
+    reason: string,
+    sessionId?: string
+  ): StudentExcuseRequest {
+    const student = this.db.users.find((u) => u._id === studentId);
+    if (!student) {
+      throw new Error('Student account not found.');
+    }
+
+    // Identify target session (active session or specific sessionId or latest session)
+    let targetSession = sessionId ? this.db.sessions.find((s) => s._id === sessionId) : null;
+    if (!targetSession) {
+      targetSession = this.db.sessions.find((s) => s.status === 'active') || null;
+    }
+    if (!targetSession && this.db.sessions.length > 0) {
+      targetSession = this.db.sessions[0];
+    }
+
+    const sessId = targetSession ? targetSession._id : 'sess-current';
+
+    const newRequest: StudentExcuseRequest = {
+      _id: 'exr-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+      sessionId: sessId,
+      studentId: student._id,
+      studentName: student.name,
+      studentCode: student.code,
+      classId: student.classId || 'class-mca',
+      type,
+      reason: reason.trim() || `Requested ${type.replace('_', ' ').toUpperCase()}`,
+      requestedAt: new Date().toISOString(),
+      status: 'pending',
+    };
+
+    if (targetSession) {
+      if (!targetSession.excuseRequests) targetSession.excuseRequests = [];
+      const existingIdx = targetSession.excuseRequests.findIndex((r) => r.studentId === student._id);
+      if (existingIdx >= 0) {
+        targetSession.excuseRequests[existingIdx] = newRequest;
+      } else {
+        targetSession.excuseRequests.push(newRequest);
+      }
+
+      // Update or add student record with pending status
+      let rec = targetSession.records.find((r) => r.studentId === student._id);
+      if (!rec) {
+        rec = {
+          _id: 'rec-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+          sessionId: targetSession._id,
+          studentId: student._id,
+          status: type as AttendanceStatus,
+          markedAt: newRequest.requestedAt,
+          method: 'Student Request',
+          reason: newRequest.reason,
+          requestStatus: 'pending',
+          requestedType: type,
+        };
+        targetSession.records.push(rec);
+      } else {
+        rec.reason = newRequest.reason;
+        rec.requestStatus = 'pending';
+        rec.requestedType = type;
+      }
+    }
+
+    this.addAuditLog(
+      `${student.name} (${student.code})`,
+      'EXCUSE_REQUESTED',
+      `Submitted ${type.toUpperCase()} request: "${newRequest.reason}"`
+    );
+
+    this.addNotification(
+      `Excuse Request: ${student.name} (${type.toUpperCase()})`,
+      `${student.name} (${student.code}) requested ${type.replace('_', ' ').toUpperCase()}: "${newRequest.reason}"`,
+      'high'
+    );
+
+    this.persistAndNotify();
+
+    // Broadcast across devices in real time so Faculty laptop receives it instantly!
+    realtimeSync.send('STUDENT_EXCUSE_REQUEST', newRequest);
+
+    return newRequest;
+  }
+
+  public reviewStudentExcuseRequest(
+    sessionId: string,
+    studentId: string,
+    decision: 'approved' | 'rejected',
+    reviewerName: string,
+    customReason?: string
+  ): StudentExcuseRequest {
+    const session = this.db.sessions.find((s) => s._id === sessionId);
+    if (!session) {
+      throw new Error('Attendance session not found.');
+    }
+
+    if (!session.excuseRequests) session.excuseRequests = [];
+    let req = session.excuseRequests.find((r) => r.studentId === studentId);
+
+    const student = this.db.users.find((u) => u._id === studentId);
+    let rec = session.records.find((r) => r.studentId === studentId);
+
+    const reqType: ExcuseType = req?.type || (rec?.requestedType as ExcuseType) || 'excused';
+
+    if (!req) {
+      req = {
+        _id: 'exr-' + Date.now(),
+        sessionId,
+        studentId,
+        studentName: student?.name || 'Student',
+        studentCode: student?.code || 'STU',
+        classId: student?.classId || 'class-mca',
+        type: reqType,
+        reason: customReason || rec?.reason || 'Excuse requested',
+        requestedAt: new Date().toISOString(),
+        status: decision,
+        reviewedBy: reviewerName,
+        reviewedAt: new Date().toISOString(),
+      };
+      session.excuseRequests.push(req);
+    } else {
+      req.status = decision;
+      req.reviewedBy = reviewerName;
+      req.reviewedAt = new Date().toISOString();
+      if (customReason) req.reason = customReason;
+    }
+
+    if (!rec) {
+      rec = {
+        _id: 'rec-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+        sessionId,
+        studentId,
+        status: decision === 'approved' ? (reqType as AttendanceStatus) : 'absent',
+        markedAt: new Date().toISOString(),
+        method: 'Student Request',
+        reason: customReason || req.reason,
+        requestStatus: decision,
+        requestedType: reqType,
+      };
+      session.records.push(rec);
+    } else {
+      rec.requestStatus = decision;
+      if (decision === 'approved') {
+        rec.status = reqType as AttendanceStatus;
+        rec.reason = customReason || req.reason;
+      } else {
+        rec.status = 'absent';
+        rec.reason = `Request rejected by ${reviewerName}: "${customReason || 'Rejected'}"`;
+      }
+    }
+
+    this.addAuditLog(
+      reviewerName,
+      'EXCUSE_REVIEWED',
+      `${decision.toUpperCase()} ${reqType.toUpperCase()} request for ${student?.name || 'Student'}. Note: "${rec.reason}"`
+    );
+
+    this.persistAndNotify();
+
+    // Broadcast decision to all devices
+    realtimeSync.send('EXCUSE_DECISION', {
+      sessionId,
+      studentId,
+      status: decision,
+      type: reqType,
+      reason: rec.reason,
+      reviewerName,
+    });
+
+    return req;
+  }
+
+  public getExcuseRequestsForSession(sessionId: string): StudentExcuseRequest[] {
+    const session = this.db.sessions.find((s) => s._id === sessionId);
+    return session?.excuseRequests ? [...session.excuseRequests] : [];
+  }
+
+  public getStudentExcuseRequests(studentId: string): StudentExcuseRequest[] {
+    const results: StudentExcuseRequest[] = [];
+    this.db.sessions.forEach((s) => {
+      if (s.excuseRequests) {
+        s.excuseRequests.filter((r) => r.studentId === studentId).forEach((r) => results.push(r));
+      }
+    });
+    return results;
+  }
+
   // --- ENTITY MANAGEMENT (ADMIN MODULE) ---
   public addUser(user: Omit<User, '_id'>, actorName: string): User {
     // If attempting to add another admin, verify requirement: Only one admin allowed
@@ -1850,7 +2139,7 @@ class StoreService {
     this.persistAndNotify();
   }
 
-  public addNotification(title: string, message: string, priority: 'low' | 'normal' | 'high', actorName: string) {
+  public addNotification(title: string, message: string, priority: 'low' | 'normal' | 'high' = 'normal', actorName: string = 'System') {
     const notif: NotificationItem = {
       _id: 'notif-' + Date.now(),
       title,

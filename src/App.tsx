@@ -16,6 +16,7 @@ import { Notifications } from './pages/Notifications';
 import { AuditTrail } from './pages/AuditTrail';
 import { Settings } from './pages/Settings';
 import { Profile } from './pages/Profile';
+import { MobileBottomNav } from './components/MobileBottomNav';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
@@ -181,6 +182,13 @@ export default function App() {
           </footer>
         </main>
       </div>
+
+      {/* Mobile Bottom Navigation Bar (Visible on smartphones, hidden on laptops) */}
+      <MobileBottomNav
+        user={currentUser}
+        currentPage={currentPage}
+        onSelectPage={setCurrentPage}
+      />
 
       {/* Toast Notification */}
       {toastMessage && (

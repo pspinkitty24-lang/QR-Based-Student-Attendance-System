@@ -61,6 +61,22 @@ export interface TimetablePeriod {
 }
 
 export type AttendanceStatus = 'present' | 'late' | 'absent' | 'excused' | 'on_duty' | 'permission';
+export type ExcuseType = 'on_duty' | 'permission' | 'excused' | 'absent';
+
+export interface StudentExcuseRequest {
+  _id: string;
+  sessionId: string;
+  studentId: string;
+  studentName: string;
+  studentCode: string;
+  classId: string;
+  type: ExcuseType;
+  reason: string;
+  requestedAt: string;
+  status: 'pending' | 'approved' | 'rejected';
+  reviewedBy?: string;
+  reviewedAt?: string;
+}
 
 export interface AttendanceRecord {
   _id: string;
@@ -68,8 +84,10 @@ export interface AttendanceRecord {
   studentId: string;
   status: AttendanceStatus;
   markedAt: string;
-  method: 'QR Code' | 'Manual' | 'Auto-Absent';
+  method: 'QR Code' | 'Manual' | 'Auto-Absent' | 'Student Request';
   reason?: string;
+  requestStatus?: 'pending' | 'approved' | 'rejected';
+  requestedType?: ExcuseType;
 }
 
 export interface AttendanceSession {
@@ -87,6 +105,7 @@ export interface AttendanceSession {
   pinCode?: string;
   classId?: string;
   subjectId?: string;
+  excuseRequests?: StudentExcuseRequest[];
 }
 
 export interface CampusSettings {

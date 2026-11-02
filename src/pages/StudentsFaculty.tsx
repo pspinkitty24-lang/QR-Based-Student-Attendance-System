@@ -570,6 +570,37 @@ export const StudentsFaculty: React.FC<StudentsFacultyProps> = ({
               />
             </div>
 
+            {/* Live Login Username & Credentials Preview */}
+            <div
+              style={{
+                padding: '12px 14px',
+                borderRadius: 8,
+                background: '#f0fdf4',
+                border: '1px solid #bbf7d0',
+                fontSize: 12,
+                color: '#166534',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+              }}
+            >
+              <span style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                🔑 Login Access for this {role === 'student' ? 'Student' : 'Faculty'}:
+              </span>
+              <span>
+                • Login Username: <strong style={{ color: '#0f172a' }}>{editingUser.email.split('@')[0] || '—'}</strong>
+              </span>
+              <span>
+                • Full Name login: <strong style={{ color: '#0f172a' }}>{editingUser.name || '—'}</strong>
+              </span>
+              <span>
+                • {role === 'student' ? 'Reg No' : 'Staff Code'}: <strong style={{ color: '#0f172a' }}>{editingUser.code || '—'}</strong>
+              </span>
+              <span style={{ fontSize: 11, color: '#15803d', marginTop: 4, lineHeight: 1.4 }}>
+                💡 <em>Name change panna new Name veche direct ah login pannalam. Username-um change pannanumna mela irukka Email address-ah update pannikalam!</em>
+              </span>
+            </div>
+
             {role === 'student' && (
               <div className="field">
                 <label style={{ fontSize: 11, fontWeight: 500, color: '#3d5c52', marginBottom: 6, display: 'block' }}>

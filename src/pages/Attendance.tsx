@@ -12,8 +12,11 @@ import {
   GraduationCap,
   BookOpen,
   Timer,
+  XCircle,
+  Bell,
+  CheckCircle2,
 } from 'lucide-react';
-import { User, AttendanceSession, AttendanceStatus } from '../types';
+import { User, AttendanceSession, AttendanceStatus, ExcuseType } from '../types';
 import { store } from '../services/store';
 import { StatusBadge } from '../components/StatusBadge';
 import { Modal } from '../components/Modal';
@@ -338,18 +341,41 @@ export const Attendance: React.FC<AttendanceProps> = ({ user, notify }) => {
 
   const getStudentStatus = (
     studentId: string
-  ): { status: AttendanceStatus; method: string; time?: string; reason?: string } => {
+  ): {
+    status: AttendanceStatus;
+    method: string;
+    time?: string;
+    reason?: string;
+    requestStatus?: 'pending' | 'approved' | 'rejected';
+    requestedType?: ExcuseType;
+  } => {
     if (!targetSession) return { status: 'absent', method: '—' };
     const rec = targetSession.records.find((r) => r.studentId === studentId);
+    const req = targetSession.excuseRequests?.find((r) => r.studentId === studentId);
     if (rec) {
       return {
         status: rec.status,
         method: rec.method,
-        reason: rec.reason,
+        reason: rec.reason || req?.reason,
+        requestStatus: rec.requestStatus || req?.status,
+        requestedType: rec.requestedType || req?.type,
         time: new Date(rec.markedAt).toLocaleTimeString('en-IN', {
           hour: '2-digit',
           minute: '2-digit',
           second: '2-digit',
+        }),
+      };
+    }
+    if (req) {
+      return {
+        status: req.type as AttendanceStatus,
+        method: 'Student Request',
+        reason: req.reason,
+        requestStatus: req.status,
+        requestedType: req.type,
+        time: new Date(req.requestedAt).toLocaleTimeString('en-IN', {
+          hour: '2-digit',
+          minute: '2-digit',
         }),
       };
     }
@@ -358,6 +384,38 @@ export const Attendance: React.FC<AttendanceProps> = ({ user, notify }) => {
       method: targetSession.status === 'completed' ? 'Auto-Absent' : 'Pending Scan',
     };
   };
+
+  const handleReviewExcuse = (
+    studentId: string,
+    decision: 'approved' | 'rejected',
+    sessionId: string,
+    requestedType?: ExcuseType
+  ) => {
+    try {
+      const student = enrolledStudents.find((s) => s._id === studentId);
+      store.reviewStudentExcuseRequest(
+        sessionId,
+        studentId,
+        decision,
+        user.name,
+        decision === 'approved'
+          ? `Approved ${requestedType?.replace('_', ' ').toUpperCase() || 'excuse'} by ${user.name}`
+          : `Rejected by ${user.name}`
+      );
+      if (notify) {
+        notify(
+          `${decision === 'approved' ? 'Approved' : 'Rejected'} ${requestedType?.replace('_', ' ').toUpperCase() || 'request'} for ${student?.name || 'student'}.`
+        );
+      }
+    } catch (err: any) {
+      if (notify) notify(err.message || 'Action failed.');
+    }
+  };
+
+  const pendingRequestsCount = enrolledStudents.filter((student) => {
+    const info = getStudentStatus(student._id);
+    return info.requestStatus === 'pending';
+  }).length;
 
   const getActiveSubjectName = () => {
     if (activeSession) {
@@ -772,6 +830,32 @@ export const Attendance: React.FC<AttendanceProps> = ({ user, notify }) => {
           </div>
 
           <div className="table-wrap">
+            {pendingRequestsCount > 0 && (
+              <div
+                style={{
+                  margin: '12px 16px',
+                  padding: '10px 16px',
+                  borderRadius: 8,
+                  backgroundColor: '#fffbeb',
+                  border: '1px solid #fde68a',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Bell size={16} color="#b45309" />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#92400e' }}>
+                    {pendingRequestsCount} Student Excuse / OD Request{pendingRequestsCount > 1 ? 's' : ''} awaiting review
+                  </span>
+                </div>
+                <span style={{ fontSize: 11, color: '#78350f' }}>
+                  Review submitted reasons and click Approve or Reject below
+                </span>
+              </div>
+            )}
+
             <table>
               <thead>
                 <tr>
@@ -793,7 +877,12 @@ export const Attendance: React.FC<AttendanceProps> = ({ user, notify }) => {
                   enrolledStudents.map((student) => {
                     const info = getStudentStatus(student._id);
                     return (
-                      <tr key={student._id}>
+                      <tr
+                        key={student._id}
+                        style={{
+                          backgroundColor: info.requestStatus === 'pending' ? '#fffdf0' : undefined,
+                        }}
+                      >
                         <td>
                           <span className="mono" style={{ fontWeight: 600, color: '#164d40' }}>
                             {student.code}
@@ -802,13 +891,59 @@ export const Attendance: React.FC<AttendanceProps> = ({ user, notify }) => {
                         <td>
                           <strong>{student.name}</strong>
                           {info.reason && (
-                            <small style={{ display: 'block', color: '#89948e', fontStyle: 'italic' }}>
-                              Note: {info.reason}
-                            </small>
+                            <div
+                              style={{
+                                marginTop: 4,
+                                padding: '4px 8px',
+                                backgroundColor: info.requestStatus === 'pending' ? '#fef3c7' : '#f4f6f4',
+                                border: info.requestStatus === 'pending' ? '1px solid #fde68a' : '1px solid #e1e7dc',
+                                borderRadius: 6,
+                                fontSize: 11,
+                                display: 'inline-block',
+                                maxWidth: '100%',
+                              }}
+                            >
+                              <span
+                                style={{
+                                  fontWeight: 600,
+                                  color: info.requestStatus === 'pending' ? '#b45309' : '#166534',
+                                  display: 'block',
+                                }}
+                              >
+                                {info.requestStatus === 'pending'
+                                  ? `🔔 Requested ${info.requestedType?.replace('_', ' ').toUpperCase() || 'EXCUSE'}:`
+                                  : 'Note:'}
+                              </span>
+                              <span style={{ color: '#294339', fontStyle: 'italic' }}>
+                                &quot;{info.reason}&quot;
+                              </span>
+                            </div>
                           )}
                         </td>
                         <td>
-                          <StatusBadge status={info.status} />
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            {info.requestStatus === 'pending' && (
+                              <span
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  padding: '2px 7px',
+                                  borderRadius: 10,
+                                  fontSize: 10,
+                                  fontWeight: 700,
+                                  backgroundColor: '#fef3c7',
+                                  color: '#b45309',
+                                  border: '1px solid #fde68a',
+                                  width: 'fit-content',
+                                }}
+                              >
+                                <Clock size={11} />
+                                PENDING REVIEW
+                              </span>
+                            )}
+                            <StatusBadge status={info.status} />
+                          </div>
                         </td>
                         <td>
                           <span style={{ fontSize: 11, color: '#556960' }}>
@@ -816,6 +951,63 @@ export const Attendance: React.FC<AttendanceProps> = ({ user, notify }) => {
                           </span>
                         </td>
                         <td>
+                          {/* Approve / Reject pending student excuse request */}
+                          {info.requestStatus === 'pending' && (
+                            <div style={{ display: 'flex', gap: 5, marginBottom: 6, flexWrap: 'wrap' }}>
+                              <button
+                                type="button"
+                                className="button primary"
+                                style={{
+                                  padding: '4px 10px',
+                                  fontSize: 11,
+                                  backgroundColor: '#166534',
+                                  color: '#ffffff',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                }}
+                                onClick={() =>
+                                  handleReviewExcuse(
+                                    student._id,
+                                    'approved',
+                                    targetSession._id,
+                                    info.requestedType
+                                  )
+                                }
+                                title="Approve student request"
+                              >
+                                <Check size={13} />
+                                Approve{' '}
+                                {info.requestedType === 'on_duty'
+                                  ? 'OD'
+                                  : info.requestedType === 'permission'
+                                  ? 'Permission'
+                                  : 'Excuse'}
+                              </button>
+                              <button
+                                type="button"
+                                className="button"
+                                style={{
+                                  padding: '4px 8px',
+                                  fontSize: 11,
+                                  backgroundColor: '#fee2e2',
+                                  color: '#991b1b',
+                                  border: '1px solid #fca5a5',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 3,
+                                }}
+                                onClick={() =>
+                                  handleReviewExcuse(student._id, 'rejected', targetSession._id)
+                                }
+                                title="Reject request and mark Absent"
+                              >
+                                <XCircle size={13} />
+                                Reject
+                              </button>
+                            </div>
+                          )}
+
                           {/* Quick action buttons for Present, Absent, Excused, On Duty (OD), Permission */}
                           <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
                             <button

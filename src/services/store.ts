@@ -14,8 +14,9 @@ import {
   StudentEligibilityReportItem,
   AttendanceStatus,
 } from '../types';
+import { realtimeSync, SyncMessage } from './realtimeSync';
 
-const STORAGE_KEY = 'attendly_campus_store_v6';
+const STORAGE_KEY = 'attendly_campus_store_v7';
 
 interface CampusDatabase {
   users: User[];
@@ -862,6 +863,116 @@ class StoreService {
       setInterval(() => {
         this.checkAndExpireSessions();
       }, 5000);
+
+      // Multi-device realtime synchronization
+      realtimeSync.subscribe((msg) => {
+        this.handleRealtimeSyncMessage(msg);
+      });
+    }
+  }
+
+  private handleRealtimeSyncMessage(msg: SyncMessage) {
+    if (msg.action === 'SESSION_START') {
+      const { session, classId, subjectId } = msg.payload;
+      if (session && session._id) {
+        const existingIdx = this.db.sessions.findIndex((s) => s._id === session._id);
+        if (existingIdx >= 0) {
+          this.db.sessions[existingIdx] = { ...this.db.sessions[existingIdx], ...session };
+        } else {
+          // Deactivate other active sessions
+          this.db.sessions.forEach((s) => {
+            if (s.status === 'active') s.status = 'completed';
+          });
+          this.db.sessions.unshift({
+            ...session,
+            classId: classId || session.classId,
+            subjectId: subjectId || session.subjectId,
+          });
+        }
+        this.saveDatabase(this.db);
+        this.emitChange();
+      }
+    } else if (msg.action === 'SESSION_END') {
+      const session = this.db.sessions.find((s) => s._id === msg.payload.sessionId);
+      if (session && session.status === 'active') {
+        session.status = 'completed';
+        this.finalizeAbsentForSession(session, 'Session completed');
+        this.saveDatabase(this.db);
+        this.emitChange();
+      }
+    } else if (msg.action === 'STUDENT_CHECKIN') {
+      const { sessionId, studentId, markedAt, method, classId } = msg.payload;
+      let session = this.db.sessions.find((s) => s._id === sessionId);
+      if (!session) {
+        session = {
+          _id: sessionId,
+          assignmentId: 'assign-' + (classId || 'mca'),
+          facultyId: 'usr-fac-1',
+          startsAt: new Date().toISOString(),
+          endsAt: new Date(Date.now() + 10 * 60000).toISOString(),
+          durationMinutes: 10,
+          status: 'active',
+          qrToken: 'SYNC-' + sessionId,
+          tokenExpiresAt: Date.now() + 10 * 60000,
+          rotationCount: 0,
+          records: [],
+          classId,
+        };
+        this.db.sessions.unshift(session);
+      }
+
+      let record = session.records.find((r) => r.studentId === studentId);
+      if (!record) {
+        record = {
+          _id: 'rec-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+          sessionId,
+          studentId,
+          status: 'present',
+          markedAt: markedAt || new Date().toISOString(),
+          method: (method as any) || 'QR Code',
+        };
+        session.records.push(record);
+        this.saveDatabase(this.db);
+        this.emitChange();
+      }
+    } else if (msg.action === 'ATTENDANCE_OVERRIDE') {
+      const { sessionId, studentId, status, reason } = msg.payload;
+      const session = this.db.sessions.find((s) => s._id === sessionId);
+      if (session) {
+        let record = session.records.find((r) => r.studentId === studentId);
+        if (record) {
+          record.status = status;
+          record.reason = reason;
+        } else {
+          session.records.push({
+            _id: 'rec-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+            sessionId,
+            studentId,
+            status,
+            markedAt: new Date().toISOString(),
+            method: 'Manual',
+            reason,
+          });
+        }
+        this.saveDatabase(this.db);
+        this.emitChange();
+      }
+    } else if (msg.action === 'REQUEST_ACTIVE_SESSION') {
+      const active = this.db.sessions.find((s) => s.status === 'active');
+      if (active) {
+        const assignment = this.db.assignments.find((a) => a._id === active.assignmentId);
+        const subject = this.db.subjects.find((s) => s._id === assignment?.subjectId);
+        const cls = this.db.classes.find((c) => c._id === assignment?.classId);
+        const fac = this.db.users.find((u) => u._id === active.facultyId);
+        realtimeSync.send('SESSION_START', {
+          session: active,
+          classId: assignment?.classId || active.classId,
+          className: cls?.name,
+          subjectId: assignment?.subjectId || active.subjectId,
+          subjectName: subject?.name,
+          facultyName: fac?.name,
+        });
+      }
     }
   }
 
@@ -1188,6 +1299,15 @@ class StoreService {
     const now = Date.now();
     const token = this.generateToken(sessionId, 0);
     const endsAtTime = now + durationMinutes * 60 * 1000;
+    // Generate clean 6-digit backup PIN
+    const pinCode = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Mark any existing active sessions as completed
+    this.db.sessions.forEach((s) => {
+      if (s.status === 'active') {
+        s.status = 'completed';
+      }
+    });
 
     const newSession: AttendanceSession = {
       _id: sessionId,
@@ -1198,6 +1318,9 @@ class StoreService {
       durationMinutes,
       status: 'active',
       qrToken: token,
+      pinCode,
+      classId: assignment.classId,
+      subjectId: assignment.subjectId,
       tokenExpiresAt: endsAtTime,
       rotationCount: 0,
       records: [],
@@ -1212,10 +1335,21 @@ class StoreService {
     this.addAuditLog(
       faculty ? `${faculty.name} (${faculty.code})` : 'Faculty',
       'SESSION_STARTED',
-      `Attendance session started for ${subject?.name || 'Subject'} (${cls?.name || 'Class'}). Duration: ${durationMinutes} mins.`
+      `Attendance session started for ${subject?.name || 'Subject'} (${cls?.name || 'Class'}). PIN: ${pinCode}. Duration: ${durationMinutes} mins.`
     );
 
     this.persistAndNotify();
+
+    // Broadcast live session to all devices
+    realtimeSync.send('SESSION_START', {
+      session: newSession,
+      classId: assignment.classId,
+      className: cls?.name,
+      subjectId: assignment.subjectId,
+      subjectName: subject?.name,
+      facultyName: faculty?.name,
+    });
+
     return newSession;
   }
 
@@ -1241,6 +1375,10 @@ class StoreService {
     );
 
     this.persistAndNotify();
+
+    // Broadcast session end to all devices
+    realtimeSync.send('SESSION_END', { sessionId });
+
     return session;
   }
 
@@ -1259,32 +1397,122 @@ class StoreService {
       throw new Error('Valid student profile required.');
     }
 
-    let parsed: { sessionId: string; token: string } | null = null;
+    let parsed: {
+      sessionId?: string;
+      token?: string;
+      classId?: string;
+      className?: string;
+      subjectId?: string;
+      subjectName?: string;
+      facultyId?: string;
+      facultyName?: string;
+      tokenExpiresAt?: number;
+      pinCode?: string;
+    } | null = null;
+
+    const trimmed = qrPayload.trim();
+
     try {
-      if (qrPayload.startsWith('{')) {
-        parsed = JSON.parse(qrPayload);
-      } else {
-        const parts = qrPayload.split(':');
+      if (trimmed.startsWith('{')) {
+        parsed = JSON.parse(trimmed);
+      } else if (trimmed.includes(':')) {
+        const parts = trimmed.split(':');
         if (parts.length >= 2) {
           parsed = { sessionId: parts[0], token: parts[1] };
         }
+      } else {
+        // Raw PIN or Token Code entered by student
+        const matched = this.db.sessions.find(
+          (s) => s.status === 'active' && (s.pinCode === trimmed || s.qrToken === trimmed)
+        );
+        if (matched) {
+          const assignment = this.db.assignments.find((a) => a._id === matched.assignmentId);
+          const subject = this.db.subjects.find((s) => s._id === assignment?.subjectId);
+          parsed = {
+            sessionId: matched._id,
+            token: matched.qrToken,
+            pinCode: matched.pinCode,
+            classId: assignment?.classId || matched.classId,
+            subjectId: assignment?.subjectId || matched.subjectId,
+            subjectName: subject?.name,
+            tokenExpiresAt: matched.tokenExpiresAt,
+          };
+        }
       }
     } catch {
-      const matchedSession = this.db.sessions.find(
-        (s) => s.status === 'active' && s.qrToken === qrPayload.trim()
+      // Ignore JSON parse errors
+    }
+
+    // Fallback: search active session by PIN or token
+    if (!parsed || (!parsed.sessionId && !parsed.pinCode)) {
+      const matched = this.db.sessions.find(
+        (s) => s.status === 'active' && (s.pinCode === trimmed || s.qrToken === trimmed)
       );
-      if (matchedSession) {
-        parsed = { sessionId: matchedSession._id, token: matchedSession.qrToken };
+      if (matched) {
+        parsed = {
+          sessionId: matched._id,
+          token: matched.qrToken,
+          pinCode: matched.pinCode,
+          classId: matched.classId,
+          subjectId: matched.subjectId,
+          tokenExpiresAt: matched.tokenExpiresAt,
+        };
       }
     }
 
-    if (!parsed || !parsed.sessionId || !parsed.token) {
-      throw new Error('Invalid QR code format. Please scan the official classroom QR code.');
+    if (!parsed) {
+      throw new Error('Invalid QR code format. Please scan the official classroom QR code displayed on screen.');
     }
 
-    const session = this.db.sessions.find((s) => s._id === parsed.sessionId);
+    // Locate session in local store
+    let session = parsed.sessionId ? this.db.sessions.find((s) => s._id === parsed.sessionId) : null;
+
+    // SELF-HEALING: If session is not present on student's device (e.g. multi-device cross-origin)
+    // The QR payload carries all required metadata to instantiate the session on the student's device
+    if (!session && parsed.sessionId) {
+      const now = Date.now();
+      const expiresAt = parsed.tokenExpiresAt || (now + 10 * 60 * 1000);
+
+      if (now > expiresAt) {
+        throw new Error('This attendance session has ended and is no longer accepting submissions.');
+      }
+
+      // Find or create local assignment for this session
+      let targetAssignment = this.db.assignments.find(
+        (a) => a.classId === parsed.classId && a.subjectId === parsed.subjectId
+      );
+      if (!targetAssignment) {
+        targetAssignment = {
+          _id: 'assign-' + (parsed.classId || 'mca') + '-' + (parsed.subjectId || 'subj'),
+          facultyId: parsed.facultyId || 'usr-fac-1',
+          subjectId: parsed.subjectId || 'subj-mca-1',
+          classId: parsed.classId || student.classId || 'class-mca',
+          isActive: true,
+        };
+        this.db.assignments.push(targetAssignment);
+      }
+
+      session = {
+        _id: parsed.sessionId,
+        assignmentId: targetAssignment._id,
+        facultyId: parsed.facultyId || 'usr-fac-1',
+        startsAt: new Date().toISOString(),
+        endsAt: new Date(expiresAt).toISOString(),
+        durationMinutes: 10,
+        status: 'active',
+        qrToken: parsed.token || 'ATND',
+        pinCode: parsed.pinCode,
+        classId: parsed.classId,
+        subjectId: parsed.subjectId,
+        tokenExpiresAt: expiresAt,
+        rotationCount: 0,
+        records: [],
+      };
+      this.db.sessions.unshift(session);
+    }
+
     if (!session) {
-      throw new Error('Attendance session does not exist.');
+      throw new Error('Attendance session does not exist. Please ask your faculty to start the session.');
     }
 
     if (session.status !== 'active' || (session.tokenExpiresAt && Date.now() > session.tokenExpiresAt)) {
@@ -1296,36 +1524,29 @@ class StoreService {
       throw new Error('This attendance session has ended and is no longer accepting submissions.');
     }
 
-    // Validate QR code match
-    if (session.qrToken !== parsed.token) {
-      throw new Error('This QR code is invalid for the active session.');
-    }
-
-    // Verify student eligibility / enrollment in this assignment
-    const assignment = this.db.assignments.find((a) => a._id === session.assignmentId);
-    if (!assignment) {
-      throw new Error('Associated academic course assignment not found.');
-    }
-
-    const isEnrolled =
-      (student.classId && student.classId === assignment.classId) ||
-      this.db.enrollments.some(
-        (e) => e.studentId === student._id && e.assignmentId === assignment._id && e.isActive
+    // Verify student belongs to this class!
+    const targetClassId = session.classId || (this.db.assignments.find((a) => a._id === session.assignmentId)?.classId);
+    if (student.classId && targetClassId && student.classId !== targetClassId) {
+      const studentClass = this.db.classes.find((c) => c._id === student.classId);
+      const sessionClass = this.db.classes.find((c) => c._id === targetClassId);
+      throw new Error(
+        `Class Mismatch: You belong to ${studentClass?.name?.split(' ')[0] || 'your class'}, but this attendance session is for ${sessionClass?.name?.split(' ')[0] || 'another class'}.`
       );
-
-    if (!isEnrolled) {
-      throw new Error('You are not enrolled in this subject and class.');
     }
+
+    // Identify subject name
+    const assignment = this.db.assignments.find((a) => a._id === session.assignmentId);
+    const subject = this.db.subjects.find((s) => s._id === (assignment?.subjectId || session.subjectId));
+    const subjectName = subject?.name || parsed.subjectName || 'Classroom Lecture';
 
     // Check duplicate attendance:
     const existing = session.records.find((r) => r.studentId === student._id);
     if (existing) {
-      const subject = this.db.subjects.find((s) => s._id === assignment.subjectId);
       return {
         record: existing,
         alreadyMarked: true,
         session,
-        subjectName: subject?.name || 'Class',
+        subjectName,
       };
     }
 
@@ -1340,21 +1561,31 @@ class StoreService {
 
     session.records.push(newRecord);
 
-    const subject = this.db.subjects.find((s) => s._id === assignment.subjectId);
-
     this.addAuditLog(
       `${student.name} (${student.code})`,
       'ATTENDANCE_MARKED',
-      `Attendance marked as PRESENT via QR code for ${subject?.name || 'Course'}.`
+      `Attendance marked as PRESENT via QR code for ${subjectName}.`
     );
 
     this.persistAndNotify();
+
+    // Broadcast student check-in to all connected devices in real time
+    realtimeSync.send('STUDENT_CHECKIN', {
+      sessionId: session._id,
+      studentId: student._id,
+      studentName: student.name,
+      studentCode: student.code,
+      classId: student.classId,
+      status: 'present',
+      markedAt: newRecord.markedAt,
+      method: 'QR Code',
+    });
 
     return {
       record: newRecord,
       alreadyMarked: false,
       session,
-      subjectName: subject?.name || 'Class',
+      subjectName,
     };
   }
 
@@ -1399,6 +1630,16 @@ class StoreService {
     );
 
     this.persistAndNotify();
+
+    // Broadcast override so student and admin screens update in real time
+    realtimeSync.send('ATTENDANCE_OVERRIDE', {
+      sessionId,
+      studentId,
+      status,
+      reason,
+      actorName,
+    });
+
     return record;
   }
 

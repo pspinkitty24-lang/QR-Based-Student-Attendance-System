@@ -115,10 +115,26 @@ export const Attendance: React.FC<AttendanceProps> = ({ user, notify }) => {
       return;
     }
 
+    const currentAssignment = allAssignments.find((a) => a._id === activeSession.assignmentId);
+    const targetClassId = currentAssignment?.classId || activeSession.classId || selectedClassId;
+    const targetSubjId = currentAssignment?.subjectId || activeSession.subjectId || selectedSubjectId;
+    const currentClass = classes.find((c) => c._id === targetClassId);
+    const currentSubject = allSubjects.find((s) => s._id === targetSubjId);
+    const currentFaculty = allUsers.find((u) => u._id === activeSession.facultyId) || user;
+
     const payload = JSON.stringify({
+      type: 'ATTENDLY_QR_SESSION',
       sessionId: activeSession._id,
+      classId: targetClassId,
+      className: currentClass?.name || 'Classroom',
+      subjectId: targetSubjId,
+      subjectName: currentSubject?.name || 'Lecture',
+      facultyId: currentFaculty._id,
+      facultyName: currentFaculty.name,
       token: activeSession.qrToken,
-      expiresAt: activeSession.tokenExpiresAt,
+      pinCode: activeSession.pinCode,
+      tokenExpiresAt: activeSession.tokenExpiresAt,
+      startedAt: activeSession.startsAt,
     });
 
     QRCode.toDataURL(payload, {
@@ -131,7 +147,22 @@ export const Attendance: React.FC<AttendanceProps> = ({ user, notify }) => {
     })
       .then((url) => setQrDataUrl(url))
       .catch((err) => console.error('Failed to generate QR:', err));
-  }, [activeSession?.qrToken, activeSession?._id, activeSession?.status]);
+  }, [
+    activeSession?.qrToken,
+    activeSession?._id,
+    activeSession?.status,
+    activeSession?.pinCode,
+    activeSession?.classId,
+    activeSession?.subjectId,
+    activeSession?.tokenExpiresAt,
+    allAssignments,
+    classes,
+    allSubjects,
+    allUsers,
+    user,
+    selectedClassId,
+    selectedSubjectId,
+  ]);
 
   // Live countdown timer for active session
   useEffect(() => {
@@ -589,34 +620,106 @@ export const Attendance: React.FC<AttendanceProps> = ({ user, notify }) => {
                 This QR code remains static throughout the entire session. Students scan using their student portal.
               </p>
 
-              {/* Backup Token Code */}
+              {/* Backup PIN Code & Token Code */}
               <div
                 style={{
-                  padding: '10px 14px',
-                  backgroundColor: '#f7f8f5',
-                  borderRadius: 8,
-                  border: '1px dashed #ced8c9',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+                  gap: 10,
+                  marginBottom: 10,
                 }}
               >
-                <div>
-                  <small style={{ display: 'block', fontSize: 10, color: '#89948e', textTransform: 'uppercase' }}>
-                    Backup Token Code:
-                  </small>
-                  <strong style={{ fontSize: 13, fontFamily: 'monospace', color: '#164d40' }}>
-                    {activeSession.qrToken}
-                  </strong>
-                </div>
-                <button
-                  className="icon-button"
-                  onClick={handleCopyCode}
-                  title="Copy session code"
-                  style={{ padding: 6, color: copiedCode ? '#166534' : '#89948e' }}
+                {activeSession.pinCode && (
+                  <div
+                    style={{
+                      padding: '10px 14px',
+                      backgroundColor: '#eef8f2',
+                      borderRadius: 8,
+                      border: '1.5px solid #a3dcbb',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <div>
+                      <small style={{ display: 'block', fontSize: 10, color: '#166534', fontWeight: 600, textTransform: 'uppercase' }}>
+                        Session PIN (6-Digit):
+                      </small>
+                      <strong style={{ fontSize: 18, fontFamily: 'monospace', letterSpacing: '2px', color: '#164d40' }}>
+                        {activeSession.pinCode}
+                      </strong>
+                    </div>
+                    <button
+                      className="icon-button"
+                      onClick={() => {
+                        if (activeSession.pinCode) {
+                          navigator.clipboard?.writeText(activeSession.pinCode);
+                          setCopiedCode(true);
+                          setTimeout(() => setCopiedCode(false), 2000);
+                        }
+                      }}
+                      title="Copy 6-digit PIN"
+                      style={{ padding: 6, color: copiedCode ? '#166534' : '#166552' }}
+                    >
+                      {copiedCode ? <Check size={16} /> : <Copy size={16} />}
+                    </button>
+                  </div>
+                )}
+
+                <div
+                  style={{
+                    padding: '10px 14px',
+                    backgroundColor: '#f7f8f5',
+                    borderRadius: 8,
+                    border: '1px dashed #ced8c9',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}
                 >
-                  {copiedCode ? <Check size={16} /> : <Copy size={16} />}
-                </button>
+                  <div>
+                    <small style={{ display: 'block', fontSize: 10, color: '#89948e', textTransform: 'uppercase' }}>
+                      Token Code:
+                    </small>
+                    <strong style={{ fontSize: 12, fontFamily: 'monospace', color: '#164d40' }}>
+                      {activeSession.qrToken}
+                    </strong>
+                  </div>
+                  <button
+                    className="icon-button"
+                    onClick={handleCopyCode}
+                    title="Copy session code"
+                    style={{ padding: 6, color: copiedCode ? '#166534' : '#89948e' }}
+                  >
+                    {copiedCode ? <Check size={16} /> : <Copy size={16} />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Multi-Device Live Sync Status */}
+              <div
+                style={{
+                  fontSize: 11,
+                  color: '#406354',
+                  backgroundColor: '#f2f7f4',
+                  borderRadius: 6,
+                  padding: '5px 10px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                }}
+              >
+                <span
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: '50%',
+                    backgroundColor: '#16a34a',
+                    display: 'inline-block',
+                  }}
+                />
+                <span>Live Multi-Device Sync Active · Students can scan from any mobile or laptop</span>
               </div>
             </div>
           ) : (

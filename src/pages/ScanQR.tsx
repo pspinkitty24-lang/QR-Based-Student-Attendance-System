@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { User, AttendanceRecord, AttendanceSession } from '../types';
 import { store } from '../services/store';
+import { realtimeSync } from '../services/realtimeSync';
 import { StatusBadge } from '../components/StatusBadge';
 
 interface ScanQRProps {
@@ -48,12 +49,19 @@ export const ScanQR: React.FC<ScanQRProps> = ({ user, notify }) => {
   const streamRef = useRef<MediaStream | null>(null);
   const animationFrameRef = useRef<number | null>(null);
 
-  // Synchronize active session state
+  // Synchronize active session state and request live sessions from faculty across devices
   useEffect(() => {
-    const unsubscribe = store.subscribe(() => {
+    const updateSession = () => {
       const live = store.getSessions().find((s) => s.status === 'active');
       setActiveSession(live || null);
-    });
+    };
+
+    updateSession();
+    const unsubscribe = store.subscribe(updateSession);
+
+    // Request active session from any faculty laptop online
+    realtimeSync.send('REQUEST_ACTIVE_SESSION', {});
+
     return unsubscribe;
   }, []);
 
@@ -164,6 +172,9 @@ export const ScanQR: React.FC<ScanQRProps> = ({ user, notify }) => {
     try {
       const result = store.markAttendanceViaQR(user._id, payload);
       setScanResult(result);
+      if (result.session) {
+        setActiveSession(result.session);
+      }
 
       if (result.alreadyMarked) {
         if (notify) notify('Notice: Your attendance is already recorded for this session.');
@@ -195,7 +206,7 @@ export const ScanQR: React.FC<ScanQRProps> = ({ user, notify }) => {
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!manualCode.trim()) {
-      setCameraError('Please enter the token code shown on screen.');
+      setCameraError('Please enter the 6-digit PIN or token code shown on screen.');
       return;
     }
     handleCodeScanned(manualCode.trim());
@@ -214,8 +225,9 @@ export const ScanQR: React.FC<ScanQRProps> = ({ user, notify }) => {
   const getActiveSubjectName = () => {
     if (!activeSession) return 'Lecture Session';
     const a = store.getAssignments().find((item) => item._id === activeSession.assignmentId);
-    const subj = store.getSubjects().find((s) => s._id === a?.subjectId);
-    return subj?.name || 'Classroom Lecture';
+    const subj = store.getSubjects().find((s) => s._id === (a?.subjectId || activeSession.subjectId));
+    const cls = store.getClasses().find((c) => c._id === (a?.classId || activeSession.classId));
+    return `${subj?.name || 'Classroom Lecture'} (${cls?.name?.split(' ')[0] || ''})`;
   };
 
   return (
@@ -555,23 +567,23 @@ export const ScanQR: React.FC<ScanQRProps> = ({ user, notify }) => {
               }}
             >
               <form onSubmit={handleManualSubmit}>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 500, color: '#3d5c52', marginBottom: 6 }}>
-                  Classroom Token Code (Backup):
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#166552', marginBottom: 6 }}>
+                  Session PIN (6-Digit) or Token Code:
                 </label>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <input
                     type="text"
                     value={manualCode}
                     onChange={(e) => setManualCode(e.target.value)}
-                    placeholder="e.g. ATND-sess-1-..."
-                    style={{ flex: 1, padding: '9px 12px', fontSize: 12 }}
+                    placeholder="e.g. 839120 or ATND-..."
+                    style={{ flex: 1, padding: '9px 12px', fontSize: 13, fontFamily: 'monospace' }}
                   />
                   <button type="submit" className="button primary" disabled={processing}>
                     Verify code
                   </button>
                 </div>
                 <small style={{ display: 'block', fontSize: 10, color: '#89948e', marginTop: 6 }}>
-                  If camera access is blocked in your browser, enter the backup token code displayed below the faculty QR.
+                  If camera access is blocked in your mobile browser, simply enter the 6-digit PIN shown on the classroom screen.
                 </small>
               </form>
             </div>

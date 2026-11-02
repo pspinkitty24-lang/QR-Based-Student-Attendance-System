@@ -23,6 +23,14 @@ interface OverviewProps {
 }
 
 export const Overview: React.FC<OverviewProps> = ({ user, onNavigate }) => {
+  const [, setVersion] = React.useState(0);
+
+  React.useEffect(() => {
+    return store.subscribe(() => {
+      setVersion((v) => v + 1);
+    });
+  }, []);
+
   const users = store.getUsers();
   const sessions = store.getSessions();
   const subjects = store.getSubjects();

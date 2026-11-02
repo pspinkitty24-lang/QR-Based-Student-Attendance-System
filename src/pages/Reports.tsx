@@ -33,6 +33,14 @@ export const Reports: React.FC<ReportsProps> = ({ user, notify }) => {
   const [selectedClassId, setSelectedClassId] = useState('');
   const [selectedSubjectId, setSelectedSubjectId] = useState('');
 
+  const [version, setVersion] = useState(0);
+
+  React.useEffect(() => {
+    return store.subscribe(() => {
+      setVersion((v) => v + 1);
+    });
+  }, []);
+
   const departments = store.getDepartments();
   const classes = store.getClasses();
   const subjects = store.getSubjects();
@@ -43,7 +51,7 @@ export const Reports: React.FC<ReportsProps> = ({ user, notify }) => {
   // 1. Fetch Eligibility Data (Reactivity: updates whenever sessions or records change)
   const rawEligibilityData = useMemo(() => {
     return store.getAttendanceEligibilityReport();
-  }, [sessions, users]);
+  }, [sessions, users, version]);
 
   // If student is viewing, filter to only their own record
   const eligibilityData = useMemo(() => {

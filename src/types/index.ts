@@ -84,6 +84,9 @@ export interface AttendanceSession {
   tokenExpiresAt: number;
   rotationCount: number;
   records: AttendanceRecord[];
+  pinCode?: string;
+  classId?: string;
+  subjectId?: string;
 }
 
 export interface CampusSettings {
